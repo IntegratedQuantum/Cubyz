@@ -197,12 +197,43 @@ pub const User = struct { // MARK: User
 		main.globalAllocator.destroy(self);
 	}
 
+	var mutexx: main.utils.Mutex = .{};
+	var mapInc: std.AutoHashMap([16]usize, struct { trace: std.debug.StackTrace, count: usize }) = .init(main.globalArena.allocator);
+	var mapDec: std.AutoHashMap([16]usize, struct { trace: std.debug.StackTrace, count: usize }) = .init(main.globalArena.allocator);
+
 	pub fn increaseRefCount(self: *User) void {
 		const prevVal = self.refCount.fetchAdd(1, .monotonic);
 		std.debug.assert(prevVal != 0);
+		const buf: *[16]usize = main.globalArena.create([16]usize);
+		@memset(buf, 0);
+		const trace = std.debug.captureCurrentStackTrace(.{}, buf);
+		mutexx.lock();
+		const thing = mapInc.getOrPut(buf.*) catch unreachable;
+		if (!thing.found_existing) {
+			thing.value_ptr.* = .{
+				.count = 0,
+				.trace = trace,
+			};
+		}
+		thing.value_ptr.count += 1;
+		mutexx.unlock();
 	}
 
 	pub fn decreaseRefCount(self: *User) void {
+		const buf: *[16]usize = main.globalArena.create([16]usize);
+		@memset(buf, 0);
+		const trace = std.debug.captureCurrentStackTrace(.{}, buf);
+		mutexx.lock();
+		const thing = mapDec.getOrPut(buf.*) catch unreachable;
+		if (!thing.found_existing) {
+			thing.value_ptr.* = .{
+				.count = 0,
+				.trace = trace,
+			};
+		}
+		thing.value_ptr.count += 1;
+		mutexx.unlock();
+
 		const prevVal = self.refCount.fetchSub(1, .monotonic);
 		std.debug.assert(prevVal != 0);
 		if (prevVal == 1) {
@@ -573,6 +604,16 @@ fn deinit() void {
 			user.decreaseRefCount();
 		} else {
 			std.log.err("Leaked user {f}", .{user});
+			var iterator1 = User.mapInc.valueIterator();
+			std.log.warn("Incs:", .{});
+			while (iterator1.next()) |val| {
+				std.log.debug("{}\n{f}", .{val.count, std.debug.FormatStackTrace{.stack_trace = val.trace}});
+			}
+			var iterator2 = User.mapDec.valueIterator();
+			std.log.warn("Decs:", .{});
+			while (iterator2.next()) |val| {
+				std.log.debug("{}\n{f}", .{val.count, std.debug.FormatStackTrace{.stack_trace = val.trace}});
+			}
 			user.deinit();
 		}
 	}
