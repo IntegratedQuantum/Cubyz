@@ -7,7 +7,8 @@ const main = @import("main");
 const NeverFailingAllocator = main.heap.NeverFailingAllocator;
 
 pub const file_monitor = @import("utils/file_monitor.zig");
-pub const VirtualList = @import("utils/virtual_mem.zig").VirtualList;
+const virtual_mem = @import("utils/virtual_mem.zig");
+pub const VirtualList = virtual_mem.VirtualList;
 
 pub const Condition = @import("utils/Condition.zig");
 pub const Futex = @import("utils/Futex.zig");

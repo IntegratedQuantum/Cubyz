@@ -36,7 +36,8 @@ const tag = @import("tag.zig");
 pub const Tag = tag.Tag;
 pub const utils = @import("utils.zig");
 pub const vec = @import("vec.zig");
-pub const ZonElement = @import("zon.zig").ZonElement;
+const zon = @import("zon.zig");
+pub const ZonElement = zon.ZonElement;
 
 pub const Window = @import("graphics/Window.zig");
 
