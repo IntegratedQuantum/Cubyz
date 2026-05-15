@@ -77,6 +77,13 @@ pub const ChannelChunk = struct {
 		sourceDir: u3,
 	};
 
+	const DestructiveEntry = struct {
+		pos: BlockPos,
+		value: [3]u8,
+		sourceDir: u3,
+		activeValue: u3,
+	};
+
 	const ChunkEntries = struct {
 		mesh: ?*chunk_meshing.ChunkMesh,
 		entries: main.ListUnmanaged(BlockPos),
@@ -171,8 +178,8 @@ pub const ChannelChunk = struct {
 		lightRefreshList.append(self.ch.pos);
 	}
 
-	fn propagateDestructive(self: *ChannelChunk, lightQueue: *main.utils.CircularBufferQueue(Entry), constructiveEntries: *main.ListUnmanaged(ChunkEntries), isFirstBlock: bool, lightRefreshList: *main.List(chunk.ChunkPosition)) main.ListUnmanaged(BlockPos) {
-		var neighborLists: [6]main.ListUnmanaged(Entry) = @splat(.{});
+	fn propagateDestructive(self: *ChannelChunk, lightQueue: *main.utils.CircularBufferQueue(DestructiveEntry), constructiveEntries: *main.ListUnmanaged(ChunkEntries), isFirstBlock: bool, lightRefreshList: *main.List(chunk.ChunkPosition)) main.ListUnmanaged(BlockPos) {
+		var neighborLists: [6]main.ListUnmanaged(DestructiveEntry) = @splat(.{});
 		var constructiveList: main.ListUnmanaged(BlockPos) = .{};
 		defer {
 			for (&neighborLists) |*list| {
@@ -182,24 +189,23 @@ pub const ChannelChunk = struct {
 		var isFirstIteration: bool = isFirstBlock;
 
 		self.mutex.lock();
-		while (lightQueue.popFront()) |_entry| {
-			var entry = _entry;
+		while (lightQueue.popFront()) |entry| {
 			const pos: BlockPos = entry.pos;
 			const oldValue: [3]u8 = self.data.getValue(pos.toIndex()).toArray();
+			var activeValue: @Vector(3, bool) = @bitCast(entry.activeValue);
 			var append: bool = false;
-			if (entry.value[0] != oldValue[0]) {
+			if (activeValue[0] and entry.value[0] != oldValue[0]) {
 				if (oldValue[0] != 0) append = true;
-				entry.value[0] = 0;
+				activeValue[0] = false;
 			}
-			if (entry.value[1] != oldValue[1]) {
+			if (activeValue[1] and entry.value[1] != oldValue[1]) {
 				if (oldValue[1] != 0) append = true;
-				entry.value[1] = 0;
+				activeValue[1] = false;
 			}
-			if (entry.value[2] != oldValue[2]) {
+			if (activeValue[2] and entry.value[2] != oldValue[2]) {
 				if (oldValue[2] != 0) append = true;
-				entry.value[2] = 0;
+				activeValue[2] = false;
 			}
-			var activeValue: @Vector(3, bool) = .{entry.value[0] != 0, entry.value[1] != 0, entry.value[2] != 0};
 			const blockLight = if (self.isSun) .{0, 0, 0} else extractColor(self.ch.data.getValue(pos.toIndex()).light());
 			if ((activeValue[0] and blockLight[0] != 0) or (activeValue[1] and blockLight[1] != 0) or (activeValue[2] and blockLight[2] != 0)) {
 				append = true;
@@ -207,6 +213,9 @@ pub const ChannelChunk = struct {
 			if (append) {
 				constructiveList.append(main.stackAllocator, pos);
 			}
+			if (entry.value[0] == 0) activeValue[0] = false;
+			if (entry.value[1] == 0) activeValue[1] = false;
+			if (entry.value[2] == 0) activeValue[2] = false;
 			if (isFirstIteration) activeValue = .{true, true, true};
 			if (!@reduce(.Or, activeValue)) {
 				continue;
@@ -220,7 +229,7 @@ pub const ChannelChunk = struct {
 			for (chunk.Neighbor.iterable) |neighbor| {
 				if (neighbor.toInt() == entry.sourceDir) continue;
 				const neighborPos, const chunkLocation = pos.neighbor(neighbor);
-				var result: Entry = .{.pos = neighborPos, .value = entry.value, .sourceDir = neighbor.reverse().toInt()};
+				var result: DestructiveEntry = .{.pos = neighborPos, .value = entry.value, .sourceDir = neighbor.reverse().toInt(), .activeValue = @bitCast(activeValue)};
 				if (!self.isSun or neighbor != .dirDown or result.value[0] != 255 or result.value[1] != 255 or result.value[2] != 255) {
 					result.value[0] -|= 8*|@as(u8, @intCast(self.ch.pos.voxelSize));
 					result.value[1] -|= 8*|@as(u8, @intCast(self.ch.pos.voxelSize));
@@ -260,9 +269,9 @@ pub const ChannelChunk = struct {
 		self.propagateDirect(lightQueue, lightRefreshList);
 	}
 
-	fn propagateDestructiveFromNeighbor(self: *ChannelChunk, lightQueue: *main.utils.CircularBufferQueue(Entry), lights: []const Entry, constructiveEntries: *main.ListUnmanaged(ChunkEntries), lightRefreshList: *main.List(chunk.ChunkPosition)) main.ListUnmanaged(BlockPos) {
+	fn propagateDestructiveFromNeighbor(self: *ChannelChunk, lightQueue: *main.utils.CircularBufferQueue(DestructiveEntry), entries: []const DestructiveEntry, constructiveEntries: *main.ListUnmanaged(ChunkEntries), lightRefreshList: *main.List(chunk.ChunkPosition)) main.ListUnmanaged(BlockPos) {
 		std.debug.assert(lightQueue.isEmpty());
-		for (lights) |entry| {
+		for (entries) |entry| {
 			var result = entry;
 			calculateIncomingOcclusion(&result.value, self.ch.data.getValue(entry.pos.toIndex()), self.ch.pos.voxelSize, @enumFromInt(entry.sourceDir));
 			lightQueue.pushBack(result);
@@ -374,10 +383,10 @@ pub const ChannelChunk = struct {
 	}
 
 	pub fn propagateLightsDestructive(self: *ChannelChunk, lights: []const BlockPos, lightRefreshList: *main.List(chunk.ChunkPosition)) void {
-		var lightQueue = main.utils.CircularBufferQueue(Entry).init(main.stackAllocator, 1 << 12);
+		var lightQueue = main.utils.CircularBufferQueue(DestructiveEntry).init(main.stackAllocator, 1 << 12);
 		defer lightQueue.deinit();
 		for (lights) |pos| {
-			lightQueue.pushBack(.{.pos = pos, .value = self.data.getValue(pos.toIndex()).toArray(), .sourceDir = 6});
+			lightQueue.pushBack(.{.pos = pos, .value = self.data.getValue(pos.toIndex()).toArray(), .sourceDir = 6, .activeValue = 0b111});
 		}
 		var constructiveEntries: main.ListUnmanaged(ChunkEntries) = .{};
 		defer constructiveEntries.deinit(main.stackAllocator);
@@ -385,6 +394,8 @@ pub const ChannelChunk = struct {
 			.mesh = null,
 			.entries = self.propagateDestructive(&lightQueue, &constructiveEntries, true, lightRefreshList),
 		});
+		var lightQueueConstructive = main.utils.CircularBufferQueue(Entry).init(main.stackAllocator, 1 << 12);
+		defer lightQueueConstructive.deinit();
 		for (constructiveEntries.items) |entries| {
 			const mesh = entries.mesh;
 			var entryList = entries.entries;
@@ -401,10 +412,10 @@ pub const ChannelChunk = struct {
 				};
 				if (value[0] == 0 and value[1] == 0 and value[2] == 0) continue;
 				channelChunk.data.setValue(entry.toIndex(), .fromArray(.{0, 0, 0}));
-				lightQueue.pushBack(.{.pos = entry, .value = value, .sourceDir = 6});
+				lightQueueConstructive.pushBack(.{.pos = entry, .value = value, .sourceDir = 6});
 			}
 			channelChunk.mutex.unlock();
-			channelChunk.propagateDirect(&lightQueue, lightRefreshList);
+			channelChunk.propagateDirect(&lightQueueConstructive, lightRefreshList);
 		}
 	}
 };
