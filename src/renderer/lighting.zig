@@ -25,36 +25,44 @@ pub fn deinit() void {
 }
 
 const LightValue = packed struct(u32) {
-	r: u8,
-	g: u8,
-	b: u8,
-	pad: u8 = undefined,
+	r: u7,
+	pad0: u1 = 0,
+	g: u7,
+	pad1: u1 = 0,
+	b: u7,
+	pad2: u1 = 0,
+	reserved: u8 = 0,
 
 	pub const zero: LightValue = .{.r = 0, .g = 0, .b = 0};
-
-	fn fromArray(arr: [3]u8) LightValue {
-		return .{.r = arr[0], .g = arr[1], .b = arr[2]};
-	}
+	pub const maxLight: LightValue = .{.r = 127, .g = 127, .b = 127};
 
 	pub fn toArray(self: LightValue) [3]u8 {
-		return .{self.r, self.g, self.b};
+		return .{2*@as(u8, self.r), 2*@as(u8, self.g), 2*@as(u8, self.b)};
 	}
 
 	pub fn max(self: LightValue, other: LightValue) LightValue {
-		return .{.r = @max(self.r, other.r), .g = @max(self.g, other.g), .b = @max(self.b, other.b)};
+		var cmp: u32 = @bitCast(self);
+		cmp |= 0x80_80_80_80;
+		cmp -= @bitCast(other);
+
+		const mask = ((cmp & 0x80_80_80_80) >> 7)*0x7f;
+
+		return @bitCast((@as(u32, @bitCast(self)) & mask) | (@as(u32, @bitCast(other)) & ~mask));
 	}
 
 	pub fn equals(self: LightValue, other: LightValue) bool {
-		return self.r == other.r and self.g == other.g and self.b == other.b;
+		return self == other;
 	}
 
 	pub fn @"-|="(self: *LightValue, other: LightValue) void {
-		self.r -|= other.r;
-		self.g -|= other.g;
-		self.b -|= other.b;
+		var val: u32 = @bitCast(self.*);
+		val |= 0x80_80_80_80;
+		val -= @bitCast(other);
+		val &= ((val & 0x80_80_80_80) >> 7)*0x7f;
+		self.* = @bitCast(val);
 	}
 
-	pub fn @"*|="(self: *LightValue, val: u8) void {
+	pub fn @"*|="(self: *LightValue, val: u7) void {
 		self.r *|= val;
 		self.g *|= val;
 		self.b *|= val;
@@ -67,9 +75,9 @@ const LightValue = packed struct(u32) {
 
 fn extractColor(in: u32) LightValue {
 	return .{
-		.r = @truncate(in >> 16),
-		.g = @truncate(in >> 8),
-		.b = @truncate(in),
+		.r = @truncate(in >> 17),
+		.g = @truncate(in >> 9),
+		.b = @truncate(in >> 1),
 	};
 }
 
@@ -153,8 +161,8 @@ pub const ChannelChunk = struct {
 				if (neighbor.toInt() == entry.sourceDir) continue;
 				const neighborPos, const chunkLocation = pos.neighbor(neighbor);
 				var result: Entry = .{.pos = neighborPos, .value = newValue, .sourceDir = neighbor.reverse().toInt()};
-				if (!self.isSun or neighbor != .dirDown or !result.value.equals(.{.r = 255, .g = 255, .b = 255})) {
-					const val = 8*|@as(u8, @intCast(self.ch.pos.voxelSize));
+				if (!self.isSun or neighbor != .dirDown or !result.value.equals(.maxLight)) {
+					const val = 4*|@as(u7, @intCast(self.ch.pos.voxelSize));
 					result.value.@"-|="(.{.r = val, .g = val, .b = val});
 				}
 				calculateOutgoingOcclusion(&result.value, self.ch.data.getValue(pos.toIndex()), self.ch.pos.voxelSize, neighbor);
@@ -239,8 +247,8 @@ pub const ChannelChunk = struct {
 				if (neighbor.toInt() == entry.sourceDir) continue;
 				const neighborPos, const chunkLocation = pos.neighbor(neighbor);
 				var result: DestructiveEntry = .{.pos = neighborPos, .value = entry.value, .sourceDir = neighbor.reverse().toInt(), .activeValue = @bitCast(activeValue)};
-				if (!self.isSun or neighbor != .dirDown or !result.value.equals(.{.r = 255, .g = 255, .b = 255})) {
-					const val = 8*|@as(u8, @intCast(self.ch.pos.voxelSize));
+				if (!self.isSun or neighbor != .dirDown or !result.value.equals(.maxLight)) {
+					const val = 4*|@as(u7, @intCast(self.ch.pos.voxelSize));
 					result.value.@"-|="(.{.r = val, .g = val, .b = val});
 				}
 				calculateOutgoingOcclusion(&result.value, self.ch.data.getValue(pos.toIndex()), self.ch.pos.voxelSize, neighbor);
@@ -292,7 +300,7 @@ pub const ChannelChunk = struct {
 		defer lightQueue.deinit();
 		for (lights) |pos| {
 			if (self.isSun) {
-				lightQueue.pushBack(.{.pos = pos, .value = .{.r = 255, .g = 255, .b = 255}, .sourceDir = 6});
+				lightQueue.pushBack(.{.pos = pos, .value = .maxLight, .sourceDir = 6});
 			} else {
 				lightQueue.pushBack(.{.pos = pos, .value = extractColor(self.ch.data.getValue(pos.toIndex()).light()), .sourceDir = 6});
 			}
@@ -325,8 +333,8 @@ pub const ChannelChunk = struct {
 						const pos: BlockPos = .fromCoords(@intCast(x), @intCast(y), @intCast(z));
 						const neighborPos, _ = pos.neighbor(neighbor);
 						var value = neighborLightChunk.data.getValue(neighborPos.toIndex());
-						if (!self.isSun or neighbor != .dirUp or !value.equals(.{.r = 255, .g = 255, .b = 255})) {
-							const val = 8*|@as(u8, @intCast(self.ch.pos.voxelSize));
+						if (!self.isSun or neighbor != .dirUp or !value.equals(.maxLight)) {
+							const val = 4*|@as(u7, @intCast(self.ch.pos.voxelSize));
 							value.@"-|="(.{.r = val, .g = val, .b = val});
 						}
 						calculateOutgoingOcclusion(&value, self.ch.data.getValue(neighborPos.toIndex()), self.ch.pos.voxelSize, neighbor);
@@ -343,9 +351,9 @@ pub const ChannelChunk = struct {
 	pub fn propagateUniformSun(self: *ChannelChunk, lightRefreshList: *main.List(chunk.ChunkPosition)) void {
 		std.debug.assert(self.isSun);
 		self.mutex.lock();
-		self.data.fillUniform(.fromArray(.{255, 255, 255}));
+		self.data.fillUniform(.maxLight);
 		self.mutex.unlock();
-		const val = 255 -| 8*|@as(u8, @intCast(self.ch.pos.voxelSize));
+		const val = 127 -| 4*|@as(u7, @intCast(self.ch.pos.voxelSize));
 		var lightQueue = main.utils.CircularBufferQueue(Entry).init(main.stackAllocator, 1 << 12);
 		defer lightQueue.deinit();
 		for (chunk.Neighbor.iterable) |neighbor| {
@@ -379,7 +387,7 @@ pub const ChannelChunk = struct {
 								.x = @intCast(x),
 								.y = @intCast(y),
 							};
-							entry.value = .{.r = 255, .g = 255, .b = 255};
+							entry.value = .maxLight;
 						},
 					}
 					entry.sourceDir = neighbor.reverse().toInt();
@@ -429,7 +437,7 @@ fn getValues(mesh: *ChunkMesh, pos: chunk.BlockPos) LightVector {
 	const blockLight = mesh.lightingData[0].getValue(pos);
 	const sunLight = mesh.lightingData[1].getValue(pos);
 	std.debug.assert(builtin.cpu.arch.endian() == .little);
-	const totalLight = @as(u64, sunLight.raw()) | (@as(u64, blockLight.raw()) << 32);
+	const totalLight = @as(u64, sunLight.raw() << 1) | (@as(u64, blockLight.raw() << 1) << 32);
 	return @as(@Vector(8, u8), @bitCast(totalLight));
 }
 
