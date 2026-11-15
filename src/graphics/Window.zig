@@ -801,9 +801,8 @@ pub fn deinit() void {
 	gamepad.deinit();
 	c.glfwDestroyWindow(window);
 	if (settings.launch_config.vulkanTestingMode) {
-		vulkan.deinit();
-	} else {
 		c.glfwDestroyWindow(openGlWindow);
+		vulkan.deinit();
 	}
 	c.glfwTerminate();
 }
